@@ -1,2 +1,5 @@
 # Mike_Extruder
-Anoher filament extruder for 3d printers
+Another filament extruder for 3d printers.
+
+
+Working on it, not finished.
