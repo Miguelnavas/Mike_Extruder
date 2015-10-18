@@ -1,0 +1,289 @@
+/*************************
+
+***************************/
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>  
+
+
+#define THERPIN      A0
+#define RESI1        6
+#define RESI2        7
+#define DIRPIN       2
+#define STEPPIN      3
+#define ENABLEPIN    1
+#define AZUL         9
+#define ROJO         8
+#define START        5
+#define UP           4
+#define DOWN         0      
+
+
+
+LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);  // Set the LCD I2C address
+
+
+const float TPto1 = 31.74;                                                     // T1
+const float RPto1 = 72000;                                                     // Ohms 1
+const float TPto2 = 81.54;                                                     // T2
+const float RPto2 = 11000;                                                     // Ohms 2
+const float resistor =  95500;                                                 // ohmnios a 25ºC
+const float voltage = 5;                                                     
+const float K= 273.15;                                                         
+const float e = 2.718281828459045;                                             
+const float B = 3950; // log(RPto2/RPto1)/(1/(TPto2+K)-(1/(TPto1+K)));  // el codigo comentado                
+const float unodivr = 1/(resistor * pow(e,(-B/298.15)));                       
+float T = 0;                                                                   
+float tmedia;                                                                  
+int cnt;                                                                     
+int sensorValue = 0;
+int cont = 0, para = 0;
+int temperaturaExtrusion = 60;
+int velocidad = 1000;
+int fase = 1;
+int botonStart = 0;
+int botonUp    = 0;
+int botonDown  = 0;
+bool calentando = false;
+int contT = 0;
+
+volatile bool motor = false;
+
+/* ***************************************************************************************************************************************** */
+/* ***************************************************************************************************************************************** */
+
+
+
+void setup()
+{
+  pinMode(STEPPIN,      OUTPUT);  
+  pinMode(ENABLEPIN,    OUTPUT);
+  pinMode(DIRPIN,       OUTPUT);
+  pinMode(RESI1,        OUTPUT);
+  pinMode(RESI2,        OUTPUT);
+  pinMode(AZUL,         OUTPUT);
+  pinMode(ROJO,         OUTPUT);
+  pinMode(START,        INPUT);
+  pinMode(UP,           INPUT);
+  pinMode(DOWN,         INPUT);
+  
+   
+  digitalWrite(ENABLEPIN,    HIGH); 
+  digitalWrite(DIRPIN,       HIGH);
+  digitalWrite(RESI1,        LOW);
+  digitalWrite(RESI2,        LOW);
+
+
+  noInterrupts();           
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1  = 0;
+
+  OCR1A = (16000000/256) / velocidad;            // compare match register 16MHz/256/XXXHz se puede modificar en LOOP pero me da algun errorcillo  
+  TCCR1B |= (1 << WGM12);   // CTC mode
+  TCCR1B |= (1 << CS12);    // 256 prescaler 
+  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
+  interrupts();             
+  
+  
+  lcd.begin(16,2);   
+  for(int i = 0; i< 3; i++)
+  {
+    lcd.backlight();
+    delay(50);
+    lcd.noBacklight();
+    delay(100);
+  }
+  lcd.backlight();  
+  
+}
+
+
+
+/* ***************************************************************************************************************************************** */
+/* ***************************************************************************************************************************************** */
+
+ISR(TIMER1_COMPA_vect)          
+{
+  
+            digitalWrite(STEPPIN, LOW);   
+  if(motor) digitalWrite(STEPPIN, HIGH);
+}
+
+
+
+/* ***************************************************************************************************************************************** */
+/* ***************************************************************************************************************************************** */
+
+void loop()
+{
+     
+  // LEEMOS TERMISTOR Y SE HACE CONVERSION A GRADOS CENTIGRADOS Y LO MOSTRAMOS EN LCD 
+  tmedia = 0;
+  for ( cnt=0; cnt<30; cnt++)
+    { 
+      sensorValue = analogRead(THERPIN);
+      tmedia = tmedia+sensorValue;
+    }        
+  tmedia = tmedia/cnt;                           // la media de las medidas    
+  float v2 = (voltage*float(tmedia))/1024.0f;    // a voltios    
+  float r1a = (voltage*float(resistor))/v2;  
+  float r1 =r1a - resistor; 
+  float T = B/log(r1*unodivr);
+  T = T-273.15;   // Kelvin a °C 
+
+
+
+  // CHECAMOS ESTADO DE LOS BOTONES
+  botonStart  = digitalRead(START);
+  botonUp     = digitalRead(UP);
+  botonDown   = digitalRead(DOWN);
+
+
+
+  // PRIMERA FASE, PEDIMOS TEMPERATURA
+  if(fase == 1)
+    {
+      lcd.setCursor(0, 0); 
+      lcd.print("Select temp ");
+      
+      if(botonUp   == false) temperaturaExtrusion = (temperaturaExtrusion + 1);
+      if(botonDown == false) temperaturaExtrusion = (temperaturaExtrusion - 1);
+      
+      lcd.setCursor(4, 1); 
+      lcd.print("+");
+      
+      lcd.setCursor(6, 1);
+      if(temperaturaExtrusion <= 99)
+      { 
+        lcd.print(" ");
+        lcd.setCursor(7, 1);
+      }
+      lcd.print(temperaturaExtrusion);
+      lcd.setCursor(12, 1); 
+      lcd.print("-");
+      if(botonStart == false){
+        fase = 2;
+        //delay(100);
+        
+      }
+    }
+  
+  // BORRAMOS PANTALLA AL CAMBIAR DE FASE  
+  if(fase == 2)
+    {
+      lcd.clear();
+      fase = 3;
+    }
+  
+  // TERCERA FASE, CALENTAMOS HASTA TEMPERATURA DE EXTRUSION   
+  if(fase == 3)
+    {
+      lcd.setCursor(0, 0); 
+      if(T < 100) 
+      {
+      lcd.print(" ");
+      lcd.setCursor(1, 0);
+      }
+      lcd.print(T);  
+      lcd.setCursor(8, 0); 
+      lcd.print("of"); 
+      lcd.setCursor(11, 0); 
+      if(temperaturaExtrusion <= 99)
+      { 
+        lcd.print(" ");
+        lcd.setCursor(12, 0);
+      }
+      lcd.print(temperaturaExtrusion);     
+      lcd.setCursor(3, 1);
+      lcd.print("... HEATING"); 
+      
+      if(T >= (temperaturaExtrusion + 2) )
+      { 
+        fase = 4;
+        calentando = false;
+        contT = 0;
+      }
+      if(T <= (temperaturaExtrusion - 2) ) 
+      {
+        calentando = true;      
+          
+      } 
+                
+      heating(calentando); 
+    }
+  
+  // BORRAMOS PANTALLA Y ENCENDEMOS MOTOR
+  if(fase == 4)
+    {
+      lcd.clear();
+      fase  = 5;
+      calentando = false;
+      motor = true; // encendemos motor
+    }
+  
+  // FASE QUINTA, MANTENEMOS TEMPERATURA Y MOTOR ON  
+  if(fase == 5)
+    {
+      lcd.setCursor(0, 0); 
+      if(T < 100) 
+      {
+      lcd.print(" ");
+      lcd.setCursor(1, 0);
+      }
+      lcd.print(T);  
+      lcd.setCursor(8, 0); 
+      lcd.print("of"); 
+      lcd.setCursor(11, 0); 
+      if(temperaturaExtrusion <= 99)
+      { 
+        lcd.print(" ");
+        lcd.setCursor(12, 0);
+      }
+      lcd.print(temperaturaExtrusion);     
+      lcd.setCursor(3, 1);
+      lcd.print("... EXTRUDING"); 
+      
+      if(T >= (temperaturaExtrusion + 2) )
+      { 
+        calentando = false;
+        contT = 0;
+      }
+      if(T <= (temperaturaExtrusion - 2) ) 
+      {
+        calentando = true;      
+          
+      } 
+                
+      heating(calentando);  
+    }
+
+}
+
+
+/* ***************************************************************************************************************************************** */
+/* ***************************************************************************************************************************************** */
+
+
+
+
+
+
+// EL CALENTADOR TIENE MUCHA POTENCIA Y MI DISEÑO DE TRIAC NO ADMITE PWM, SOLO   
+// ON / OFF, ESTA FUNCION LO ENCIENDE UN TIEMPO DETERMINADO SI SE LE MANDA true
+
+void heating(bool calentando)
+{
+  if(calentando == true)
+    {
+      if(contT < 15)                 digitalWrite(RESI2, HIGH);
+      if(contT >= 15 && contT < 120) digitalWrite(RESI2, LOW);
+      if(contT >= 120)               contT = 0;
+
+      contT ++;
+    } 
+    if(calentando == false)           digitalWrite(RESI2, LOW);
+}
+
+
+/* ***************************************************************************************************************************************** */
+/* ***************************************************************************************************************************************** */
